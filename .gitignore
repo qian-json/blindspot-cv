@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+weights/
+*.pt
+fetch_log.csv
+demo_clips/
+.DS_Store

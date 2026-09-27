@@ -1,0 +1,9 @@
+# Python 3.12 or newer. These are the versions the app was tested with.
+ultralytics==8.4.163
+torch==2.14.0
+torchvision==0.29.0
+opencv-python==5.0.0.93
+numpy==2.5.3
+requests==2.34.2
+# The incident check (incidents.py) runs only on Apple-silicon Macs; elsewhere the app runs without it
+mlx-vlm==0.7.3; sys_platform == "darwin" and platform_machine == "arm64"

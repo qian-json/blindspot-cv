@@ -1,0 +1,560 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Traffic Vehicle Detection</title>
+<style>
+  :root { color-scheme: dark; --bg:#0e1116; --panel:#161b22; --line:#21262d; --text:#e6edf3;
+          --muted:#8b949e; --ok:#3fb950; --err:#f85149; --warn:#d29922; --accent:#58a6ff; }
+  body { margin:0; background:var(--bg); color:var(--text); font:14px/1.4 system-ui, sans-serif; }
+  header { display:flex; gap:10px 16px; align-items:center; flex-wrap:wrap; padding:12px 16px; }
+  h1 { font-size:15px; font-weight:600; margin:0; }
+  .dot { width:10px; height:10px; border-radius:50%; background:var(--muted); flex:none; }
+  .dot.live { background:var(--ok); }
+  .dot.err { background:var(--err); }
+  .dot.flash { animation:flash 1s ease-out; }
+  @keyframes flash { from { box-shadow:0 0 0 8px rgba(63,185,80,.5); } to { box-shadow:0 0 0 0 transparent; } }
+  main { padding:0 16px 24px; max-width:1500px; }
+
+  .controls { margin-left:auto; display:flex; flex-wrap:wrap; gap:8px 16px; align-items:center; color:var(--muted); font-size:13px; }
+  .switch { display:flex; align-items:center; gap:6px; }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .seg button { background:transparent; color:var(--muted); border:0; padding:4px 10px; font:600 12px system-ui, sans-serif; cursor:pointer; }
+  .seg button + button { border-left:1px solid var(--line); }
+  .seg button.on { background:var(--accent); color:#0e1116; }
+  .seg button:disabled { cursor:progress; }
+  #switch-status { font-size:12px; }
+  .how { color:var(--muted); font-size:12px; margin:0; max-width:980px; }
+
+  .sec { border-top:1px solid var(--line); margin-top:18px; padding-top:14px; }
+  .sec h2 { font-size:16px; font-weight:600; margin:0 0 4px; display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .pill { font-size:12px; font-weight:600; color:var(--accent); border:1px solid var(--accent); border-radius:999px; padding:1px 8px; }
+  .note { color:var(--muted); font-size:12px; margin:0 0 10px; max-width:980px; }
+
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); gap:8px; margin-bottom:12px; }
+  .tiles > div { background:var(--panel); padding:8px 10px; border-radius:6px; }
+  .tiles span { display:block; color:var(--muted); font-size:12px; }
+  .tiles b { font-variant-numeric:tabular-nums; }
+  .legend { display:flex; flex-wrap:wrap; gap:4px 12px; font-weight:600; }
+  .swatch { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:5px; }
+
+  /* One card per camera. Subgrid lines the rows up across cards, so on wide
+     screens the raw images form one row, with the boxes-only detections below
+     them and the labeled detections below those. */
+  .cams { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:14px 12px; }
+  .cam { display:grid; grid-row:span 5; grid-template-rows:subgrid; row-gap:6px;
+         background:var(--panel); border-radius:8px; padding:10px; min-width:0; }
+  .cam h3 { font-size:13px; font-weight:600; margin:0; }
+  .cam { position:relative; }
+  .cam.viewing { outline:2px solid var(--accent); outline-offset:-2px; }
+  /* Paused cameras aren't fetched or run through the detector; they keep their
+     size (so rows stay aligned) but show a note instead of stale images. */
+  .cam.paused { cursor:pointer; }
+  .cam.paused figure, .cam.paused .cam-stats { visibility:hidden; }
+  .cam .paused-note { display:none; }
+  .cam.paused .paused-note { display:grid; place-items:center; position:absolute; inset:34px 10px 10px; padding:12px;
+                             text-align:center; color:var(--muted); font-size:13px; border:1px dashed var(--line); border-radius:6px; }
+  .cam.paused:hover .paused-note, .cam.paused:focus-visible .paused-note { color:var(--text); border-color:var(--accent); }
+  .cam:focus-visible { outline:2px solid var(--accent); }
+  .cam h3 small { color:var(--muted); font-weight:400; }
+  figure { margin:0; }
+  figure img { display:block; width:100%; aspect-ratio:var(--ar, 16 / 10); object-fit:fill; background:#000; border-radius:4px; }
+  .frame { position:relative; }
+  .labels { position:absolute; inset:0; pointer-events:none; overflow:hidden; border-radius:4px; }
+  .lbl { position:absolute; transform:translateY(-100%); font:600 10px/1.25 system-ui, sans-serif; color:#0e1116;
+         padding:0 3px; border-radius:2px; white-space:nowrap; opacity:.92; }
+  figcaption { color:var(--muted); font-size:12px; margin-top:3px; }
+  .cam-stats { display:grid; gap:3px; font-size:13px; font-variant-numeric:tabular-nums; align-content:start; }
+  .cam-stats .big { font-size:13px; color:var(--muted); }
+  .cam-stats .big b { font-size:22px; color:var(--text); margin-right:4px; }
+  .cam-stats .err { color:var(--err); }
+  .incident { font-size:13px; color:var(--muted); }
+  .incident b { color:var(--text); font-weight:600; }
+  .incident.possible { color:var(--text); background:rgba(210,153,34,.15); border:1px solid var(--warn); border-radius:6px; padding:5px 7px; }
+  .incident.possible b { color:var(--warn); }
+  .incident.alert { color:var(--text); background:rgba(248,81,73,.15); border:1px solid var(--err); border-radius:6px; padding:5px 7px; }
+  .incident.alert b { color:var(--err); }
+  .cam.alert { outline:2px solid var(--err); outline-offset:-2px; }
+
+  #error { color:var(--err); }
+  .log h2 { font-size:14px; font-weight:600; margin:24px 0 6px; display:flex; gap:10px; align-items:baseline; }
+  .log h2 a { color:var(--muted); font-size:12px; font-weight:400; }
+  .table-wrap { overflow-x:auto; }
+  .log table { border-collapse:collapse; width:100%; font-size:13px; font-variant-numeric:tabular-nums; }
+  .log th, .log td { text-align:left; padding:5px 12px 5px 0; border-bottom:1px solid var(--line); white-space:nowrap; }
+  .log th { color:var(--muted); font-weight:500; font-size:12px; }
+  td.switched { color:var(--ok); font-weight:600; }
+  td.same { color:var(--muted); }
+  td.error { color:var(--err); }
+</style>
+</head>
+<body>
+<header>
+  <div id="dot" class="dot"></div>
+  <h1>Traffic vehicle detection</h1>
+  <div class="controls">
+    <div class="switch">View <div class="seg" id="view-switch" role="group" aria-label="Which cameras run">
+      <button type="button" data-mode="one" title="Only the camera you're viewing is fetched and run through the detector">One camera</button>
+      <button type="button" data-mode="all" title="Every camera runs (heavier; for collecting data and comparing)">All cameras</button>
+    </div></div>
+    <div class="switch">Model <div class="seg" id="model-switch" role="group" aria-label="YOLO model"></div>
+      <span id="switch-status"></span></div>
+  </div>
+</header>
+<main>
+  <p class="how"><b>How speed is estimated:</b> points on each detected vehicle are followed between two frames
+  (0.2 s apart on live video, ~0.4 s apart in TranStar bursts), and the vehicle's own size is the ruler
+  (typical car 4.5 m long, 1.8 m wide). No per-camera calibration, so treat speeds as rough (&plusmn;30% or worse).
+  At night, long exposures smear moving cars into longer streaks, so speeds read low. TranStar's burst frame gap is
+  only known to &plusmn;0.1 s (another &plusmn;25%). Cameras that post single stills can't show speed.</p>
+  <p class="how" id="incident-how"></p>
+  <p id="error"></p>
+  <div id="sections"></div>
+  <section class="log">
+    <h2>Houston TranStar fetch log <a href="/fetch_log.csv" download>full CSV</a></h2>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>#</th><th>Camera</th><th>Checked</th><th>Result</th><th>Camera image from</th><th>Since prev switch</th></tr></thead>
+        <tbody id="log"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+<script>
+const CLASS_COLORS = {{CLASS_COLORS}};
+const MODEL = {{MODEL}};              // active YOLO model: {id, name, detail}
+const YOLO_CHOICE = {{YOLO_CHOICE}};  // {active, options: [{id, name}]}
+const VIEW = {{VIEW}};                // {mode: "one" | "all", active: "tt:<id>" | "br:<id>"}
+const TRANSTAR_CAMERAS = {{TRANSTAR_CAMERAS}};
+const LIVE_CAMERAS = {{LIVE_CAMERAS}};
+const INCIDENTS = {{INCIDENTS}};      // {model: name or null when off, alert: P(incident) threshold, every: s, accuracy}
+
+const $ = id => document.getElementById(id);
+const fmt = t => t ? new Date(t * 1000).toLocaleTimeString() : "-";
+const duration = s => s < 60 ? s + "s" : Math.floor(s / 60) + "m " + (s % 60) + "s";
+const dur = s => s == null ? "-" : duration(Math.round(s));
+const ms = v => v == null ? "-" : Math.round(v) + " ms";
+const mph = v => v == null ? "-" : Math.round(v) + " mph";
+const plural = (n, word) => n + " " + word + (n === 1 ? "" : word === "bus" ? "es" : "s");
+const median = xs => { if (!xs.length) return null; const a = [...xs].sort((x, y) => x - y), m = a.length >> 1;
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2; };
+const LABELS = {first: "first image", switched: "switched", same: "same image", error: "failed"};
+const isOn = key => VIEW.mode === "all" || key === VIEW.active;
+
+function el(tag, props = {}, ...children) {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children);
+  return node;
+}
+
+function legend(counts) {
+  return Object.entries(CLASS_COLORS).map(([name, color]) =>
+    el("span", {}, el("i", {className: "swatch", style: "background:" + color}), plural(counts[name] || 0, name)));
+}
+
+// ------------------------------------------------------------ sections
+
+const SECTIONS = [
+  {source: "transtar", place: "Houston", title: "TranStar snapshots", cameras: TRANSTAR_CAMERAS, ar: "320 / 260"},
+  {source: "live", place: "Baton Rouge", title: "511LA live video", cameras: LIVE_CAMERAS.filter(c => !c.replay), ar: "16 / 9"},
+  {source: "replay", place: "Test clips", title: "recorded incidents", cameras: LIVE_CAMERAS.filter(c => c.replay), ar: "16 / 9"},
+].filter(s => s.cameras.length);
+const isLive = sec => sec.source === "live" || sec.source === "replay";  // both arrive over /live
+
+const NOTES = {
+  transtar: "Counts are a lower bound: snapshots are only 320×260, so distant cars in heavy traffic are a few " +
+    "pixels wide and go undetected. Car vs. truck is shaky at this size (COCO's \"truck\" includes pickups). " +
+    "Each camera posts a new still every ~2m40s, so cars can't be tracked across snapshots.",
+  live: "Live H.264 video from Louisiana DOTD cameras (the streams 511la.org plays), 427×240. The model takes " +
+    "the newest frame whenever it's free, so detections update a few times a second while the video plays at 15 fps. " +
+    "The streams arrive in ~10 s chunks, so the picture runs tens of seconds behind real time. " +
+    "At night, headlight glare and dark car bodies make detection much weaker.",
+  replay: "Recorded traffic-camera footage of real incidents from public research datasets (TAD and TAD-benchmark), " +
+    "scaled to 240p like our cameras and played on a loop as if it were live, to show the incident check at work. " +
+    "Each title says what happens and whether the check should flag it; the last one is ordinary congestion, which " +
+    "shouldn't be. Click a clip to run it.",
+};
+
+const TILES = {
+  transtar: [["incident", "Incident check"], ["total", "Vehicles detected now"], ["classes", "By class, all cameras", 2], ["busiest", "Busiest camera"],
+             ["speed", "Median speed now (burst cameras)"], ["analyzed", "Snapshots analyzed"], ["infer", "Avg inference"],
+             ["switch", "Avg time between switches"], ["next", "Next check in"]],
+  live: [["incident", "Incident check"], ["total", "Vehicles detected now"], ["classes", "By class, all cameras", 2], ["busiest", "Busiest camera"],
+         ["speed", "Median speed, last 60 s"], ["streams", "Streams live"], ["rate", "Detections/second, per camera"],
+         ["infer", "Avg inference"]],
+};
+TILES.replay = TILES.live;
+
+function buildSection(sec) {
+  sec.tiles = {};
+  const tiles = TILES[sec.source].filter(([key]) => key !== "incident" || INCIDENTS.model).map(([key, label, span]) => {
+    const value = key === "classes" ? el("div", {className: "legend"}, "-") : el("b", {}, "-");
+    sec.tiles[key] = value;
+    const tile = el("div", {}, el("span", {}, label), value);
+    if (span) tile.style.gridColumn = "span " + span;
+    return tile;
+  });
+  sec.pill = el("span", {className: "pill"});
+  sec.note = el("p", {className: "note"});
+  sec.grid = el("div", {className: "cams"});
+  $("sections").append(el("section", {className: "sec", style: "--ar:" + sec.ar},
+    el("h2", {}, sec.place + ": " + sec.title, sec.pill), sec.note, el("div", {className: "tiles"}, ...tiles), sec.grid));
+  sec.cards = {};
+  for (const cam of sec.cameras) sec.cards[cam.id] = makeCard(sec, cam);
+}
+
+function makeCard(sec, cam) {
+  const live = isLive(sec);
+  const card = {
+    raw: el("img", {alt: (live ? "Live video from " : "Raw snapshot from ") + cam.name}),
+    det: el("img", {alt: "Vehicle detections (boxes only) on " + cam.name}),
+    detText: el("img", {alt: "Vehicle detections with text labels on " + cam.name}),
+    rawCap: el("figcaption", {}, !live ? "Raw snapshot" : cam.replay ? "Recorded clip" : "Live stream, connecting..."),
+    detCap: el("figcaption", {}, "Detections, boxes only"),
+    labels: el("div", {className: "labels"}),
+    count: el("b", {}, "-"), classes: el("div", {className: "legend"}),
+    quality: el("div"), speed: el("div"), history: el("div"), status: el("div"), error: el("div", {className: "err"}),
+    incident: el("div", {className: "incident"}, INCIDENTS.model ? "Incident check: waiting for frames..." : ""),
+  };
+  if (!live && !cam.burst) card.speed.textContent = "speed: n/a, this camera posts single stills";
+  card.key = cam.key;
+  card.el = el("article", {className: "cam"},
+    el("h3", {}, cam.name + " ", el("small", {}, !cam.replay ? "#" + cam.id
+      : cam.expect == null ? "recorded" : cam.expect ? "should be flagged" : "should not be flagged")),
+    el("figure", {}, card.raw, card.rawCap),
+    el("figure", {}, card.det, card.detCap),
+    el("figure", {}, el("div", {className: "frame"}, card.detText, card.labels),
+      el("figcaption", {}, "With labels: class and speed (or confidence where speed isn't measured)")),
+    el("div", {className: "cam-stats"}, card.incident, el("div", {className: "big"}, card.count, "vehicles"),
+      card.classes, card.quality, card.speed, card.history, card.status, card.error),
+    el("div", {className: "paused-note"}, "Paused, so it isn't fetched or run through the detector. Click to view this camera."));
+  const view = () => { if (!isOn(card.key)) setView({cam: card.key}); };
+  card.el.addEventListener("click", view);
+  card.el.addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); view(); } });
+  sec.grid.append(card.el);
+  return card;
+}
+
+function showDetection(card, s) {
+  card.count.textContent = s.vehicles;
+  card.classes.replaceChildren(...legend(s.counts));
+  card.quality.textContent = "avg confidence " + (s.mean_conf == null ? "-" : s.mean_conf.toFixed(2)) + ", " + ms(s.inference_ms);
+  if (s.speed) card.speed.textContent = "speed now: " + speedText(s.speed);
+}
+
+// Incident check result: {p, text, at, ms, model, frames, recent, state} or {error}. state: "confirmed"
+// (2 of the last 3 checks over the line), "possible" (just the latest) or "clear".
+function showIncident(card, inc) {
+  card.incidentState = inc && inc.state || null;
+  const alert = card.incidentState === "confirmed", possible = card.incidentState === "possible";
+  card.el.classList.toggle("alert", alert && isOn(card.key));
+  card.incident.classList.toggle("alert", alert);
+  card.incident.classList.toggle("possible", possible);
+  if (!inc) return;
+  if (inc.error) { card.incident.textContent = inc.error; return; }
+  const pct = Math.round(inc.p * 100) + "%";
+  const when = " (" + fmt(inc.at) + ", " + (inc.frames === 1 ? "1 frame" : inc.frames + " frames") + ", " +
+    (inc.ms / 1000).toFixed(1) + " s)";
+  // Live cameras: how many of the last few checks flagged it (a lasting incident keeps getting flagged)
+  const r = inc.recent || [], hits = r.filter(p => p >= INCIDENTS.alert).length;
+  const agree = r.length > 1 && hits ? "; flagged in " + hits + " of the last " + r.length + " checks" : "";
+  card.incident.replaceChildren(alert || possible
+    ? el("span", {}, el("b", {}, (alert ? "Incident " : "Possible incident ") + pct),
+      inc.text ? el("span", {}, ". The model's description (details can be wrong): \u201c" + inc.text + "\u201d") : "",
+      when, agree, possible ? " (confirmed if it's flagged again)" : "")
+    : el("span", {}, inc.p < 0.3 ? "No incident seen " : "Below the alert level: ", el("b", {}, pct), when, agree));
+}
+
+function showIncidentTile(sec) {
+  if (!sec.tiles.incident) return;
+  const running = sec.cameras.filter(cam => isOn(cam.key)).map(cam => sec.cards[cam.id]);
+  const checked = running.filter(c => c.incidentState);
+  const confirmed = checked.filter(c => c.incidentState === "confirmed").length;
+  const possible = checked.filter(c => c.incidentState === "possible").length;
+  sec.tiles.incident.textContent = !running.length ? "all paused" : !checked.length ? "waiting"
+    : confirmed || possible ? [confirmed && confirmed + " confirmed", possible && possible + " possible"].filter(Boolean).join(", ")
+    : "nothing flagged";
+  sec.tiles.incident.style.color = confirmed ? "var(--err)" : possible ? "var(--warn)" : "";
+}
+
+function speedText(sp) {
+  if (!sp.measured) return "no vehicle big enough to measure";
+  return (sp.median_mph == null ? "all stopped" : "median " + mph(sp.median_mph) + " of " + sp.moving + " moving") +
+    (sp.stopped ? ", " + sp.stopped + " stopped" : "");
+}
+
+// Text labels over the detection image: class plus speed where measured, else confidence
+const SHORT = {motorcycle: "moto"};
+function renderLabels(card, dets) {
+  card.labels.replaceChildren(...(dets || []).map(([x1, y1, , , cls, conf, v]) =>
+    el("span", {className: "lbl", style: "left:" + x1 * 100 + "%;top:" + y1 * 100 + "%;background:" + CLASS_COLORS[cls]},
+      (SHORT[cls] || cls) + " " + (v == null ? Math.round(conf * 100) + "%" : v < 3 ? "stopped" : Math.round(v) + " mph"))));
+}
+
+function showTotals(sec, entries) {  // entries: [{name, stats}] for cameras with results
+  const totals = {};
+  for (const e of entries) for (const [k, v] of Object.entries(e.stats.counts)) totals[k] = (totals[k] || 0) + v;
+  sec.tiles.total.textContent = entries.length ? entries.reduce((n, e) => n + e.stats.vehicles, 0) : "-";
+  sec.tiles.classes.replaceChildren(...(entries.length ? legend(totals) : ["-"]));
+  const busiest = entries.reduce((a, e) => !a || e.stats.vehicles > a.stats.vehicles ? e : a, null);
+  sec.tiles.busiest.textContent = busiest ? busiest.name + " (" + busiest.stats.vehicles + ")" : "-";
+}
+
+function flash() {
+  const dot = $("dot");
+  dot.classList.remove("flash");
+  void dot.offsetWidth;  // restart the animation
+  dot.classList.add("flash");
+}
+
+// ------------------------------------------------------------ model switch
+
+let switching = null;  // model id requested, until the server reports results from it
+
+function applyModel(model, choice) {
+  if (choice) Object.assign(YOLO_CHOICE, choice);
+  if (model) Object.assign(MODEL, model);
+  for (const sec of SECTIONS) {
+    sec.pill.textContent = MODEL.name;
+    sec.note.textContent = MODEL.detail + ". " + NOTES[sec.source];
+  }
+  if (switching && MODEL.id === switching) switching = null;
+  for (const b of $("model-switch").children) {
+    b.classList.toggle("on", b.dataset.id === YOLO_CHOICE.active);
+    b.setAttribute("aria-pressed", b.dataset.id === YOLO_CHOICE.active);
+    b.disabled = !!switching;
+  }
+  $("switch-status").textContent = switching ? "re-running on current images..." : "";
+}
+
+async function switchModel(id) {
+  if (id === YOLO_CHOICE.active || switching) return;
+  switching = id;
+  applyModel();
+  try {
+    const r = await fetch("/model?name=" + encodeURIComponent(id), {method: "POST"});
+    if (!r.ok) throw new Error(await r.text());
+    applyModel(null, await r.json());
+  } catch (e) {
+    switching = null;
+    applyModel();
+    $("error").textContent = "Couldn't switch model: " + e.message;
+  }
+}
+
+$("model-switch").append(...YOLO_CHOICE.options.map(o => {
+  const b = el("button", {type: "button"}, o.name);
+  b.dataset.id = o.id;
+  b.addEventListener("click", () => switchModel(o.id));
+  return b;
+}));
+
+// ------------------------------------------------------------ one camera / all cameras
+
+function applyView(view) {
+  if (view) Object.assign(VIEW, view);
+  for (const b of $("view-switch").children) {
+    b.classList.toggle("on", b.dataset.mode === VIEW.mode);
+    b.setAttribute("aria-pressed", b.dataset.mode === VIEW.mode);
+  }
+  for (const sec of SECTIONS) {
+    for (const card of Object.values(sec.cards)) {
+      const on = isOn(card.key);
+      card.el.classList.toggle("paused", !on);
+      card.el.classList.toggle("viewing", on && VIEW.mode === "one");
+      card.el.classList.toggle("alert", on && card.incidentState === "confirmed");
+      card.el.tabIndex = on ? -1 : 0;
+    }
+    showIncidentTile(sec);
+  }
+}
+
+async function setView(params) {
+  try {
+    const r = await fetch("/view?" + new URLSearchParams(params), {method: "POST"});
+    if (!r.ok) throw new Error(await r.text());
+    applyView(await r.json());
+  } catch (e) {
+    $("error").textContent = "Couldn't change the view: " + e.message;
+  }
+}
+
+for (const b of $("view-switch").children) b.addEventListener("click", () => setView({mode: b.dataset.mode}));
+
+// ------------------------------------------------------------ Houston TranStar (/events)
+
+let transtar = null;
+
+function swapImages(card, rawSrc, detSrc, done) {
+  // Swap both together, after both have loaded, so they never disagree
+  const load = src => new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => resolve(src);
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
+  Promise.all([load(rawSrc), load(detSrc)]).then(([raw, det]) => {
+    if (raw) card.raw.src = raw;
+    if (det) card.det.src = card.detText.src = det;
+    done();
+  });
+}
+
+function renderTranstar(data) {
+  transtar = data;
+  applyModel(data.model, data.choice);
+  applyView(data.view);
+  for (const sec of SECTIONS.filter(s => s.source === "transtar")) {
+    const entries = [];
+    for (const cam of data.cameras) {
+      const card = sec.cards[cam.id], m = cam.models.yolo;
+      if (!card) continue;
+      if (m.stats) {
+        showDetection(card, m.stats);
+        if (isOn(cam.key)) entries.push({name: cam.name, stats: m.stats});
+      }
+      const h = m.session;
+      card.history.textContent = !h.snapshots ? "" : "this run: avg " + h.avg.toFixed(1) + ", peak " + h.peak +
+        " over " + plural(h.snapshots, "snapshot") + (h.avg_mph == null ? "" : ", avg speed " + mph(h.avg_mph));
+      if (cam.burst && m.stats && !m.stats.speed) card.speed.textContent = "speed: burst frame wasn't ready this time";
+      const sw = cam.switching.avg_switch_secs;
+      card.statusText = (sw == null ? "" : ", switches every " + dur(sw)) + ", checked " + fmt(cam.checked_at) +
+        " (" + LABELS[cam.result] + ")";
+      card.error.textContent = cam.error || m.error || "";
+      if (INCIDENTS.model) showIncident(card, cam.incident);
+      if (cam.frame && card.shown !== cam.frame) {
+        card.shown = cam.frame;
+        const dets = m.dets, name = data.model.name;
+        swapImages(card, "/raw/" + cam.id + ".jpg?n=" + cam.frame, "/det/yolo/" + cam.id + ".jpg?n=" + cam.frame,
+          () => {
+            card.detCap.textContent = name + " detections, boxes only, snapshot from " + fmt(cam.snapshot_at);
+            renderLabels(card, dets);
+            flash();
+          });
+      }
+    }
+    showTotals(sec, entries);
+    showIncidentTile(sec);
+    const burstDets = data.cameras.filter(c => c.burst && isOn(c.key)).flatMap(c => c.models.yolo.dets);
+    sec.tiles.speed.textContent = data.cameras.some(c => c.burst && isOn(c.key))
+      ? mph(median(burstDets.map(d => d[6]).filter(v => v != null && v >= 3))) : "n/a";
+    sec.tiles.analyzed.textContent = data.cameras.reduce((n, c) => n + c.models.yolo.session.snapshots, 0);
+    sec.tiles.infer.textContent = ms(data.overall.avg_ms.yolo);
+    sec.tiles.switch.textContent = dur(data.overall.avg_switch_secs);
+  }
+  renderLog(data.log);
+  tick();
+}
+
+function renderLog(log) {
+  $("log").replaceChildren(...log.map(f => {
+    const result = el("td", {className: f.result}, LABELS[f.result] + (f.error ? ": " + f.error : ""));
+    return el("tr", {}, el("td", {}, "#" + f.n), el("td", {}, f.camera), el("td", {}, fmt(f.checked_at)),
+      result, el("td", {}, fmt(f.snapshot_at)), el("td", {}, f.gap == null ? "" : dur(f.gap)));
+  }));
+}
+
+function tick() {
+  if (!transtar) return;
+  const now = Date.now() / 1000;
+  for (const sec of SECTIONS.filter(s => s.source === "transtar")) {
+    sec.tiles.next.textContent = transtar.next_fetch_at == null ? "paused"
+      : Math.max(0, Math.round(transtar.next_fetch_at - now)) + "s";
+    for (const cam of transtar.cameras) {
+      const card = sec.cards[cam.id];
+      if (!card || card.statusText == null) continue;
+      const age = cam.snapshot_at ? duration(Math.max(0, Math.round(now - cam.snapshot_at))) : "-";
+      card.status.textContent = "image age " + age + card.statusText;
+    }
+  }
+}
+setInterval(tick, 500);
+
+// ------------------------------------------------------------ Baton Rouge live video (/live)
+
+const live = {};  // camera id -> {raw: info, yolo: info}
+
+function applyLive(updates) {
+  const secs = SECTIONS.filter(isLive);  // live cameras and test clips
+  for (const u of updates) {
+    (live[u.cam] ||= {})[u.kind] = u.info;
+    const card = secs.map(s => s.cards[u.cam]).find(Boolean);
+    if (!card) continue;
+    const src = u.jpeg ? "data:image/jpeg;base64," + u.jpeg : null;
+    if (u.kind === "incident") { showIncident(card, u.info); continue; }
+    if (u.kind === "raw") {
+      if (src) card.raw.src = src;
+      const what = u.cam.startsWith("replay") ? "Recorded clip" : "Live stream";
+      card.rawCap.textContent = u.info.status === "live" ? what + ", " + Math.round(u.info.fps) + " fps"
+        : what + " " + u.info.status + "...";
+      continue;
+    }
+    if (src) { card.det.src = card.detText.src = src; renderLabels(card, u.info.dets); }
+    if (u.info.stats) {
+      showDetection(card, u.info.stats);
+      const sp = u.info.stats.speed;
+      card.speed.textContent = "speed now: " + (sp ? speedText(sp) : "-") +
+        (u.info.median_mph_60s == null ? "" : "; last 60 s median " + mph(u.info.median_mph_60s));
+    }
+    card.detCap.textContent = (u.info.model || MODEL.name) + " detections, boxes only" +
+      (u.info.rate ? ", " + u.info.rate.toFixed(1) + " per second" : "");
+    if (u.info.avg_60s != null) card.history.textContent = "last 60 s: avg " + u.info.avg_60s.toFixed(1) + ", peak " + u.info.peak_60s;
+    card.error.textContent = u.info.error || "";
+  }
+  secs.forEach(showLiveTotals);
+}
+
+function showLiveTotals(sec) {
+  const entries = [], rates = [], rolling = [];
+  let streams = 0, inferMs = null;
+  const running = sec.cameras.filter(cam => isOn(cam.key));
+  for (const cam of running) {
+    const st = live[cam.id] || {}, m = st.yolo;
+    if (st.raw && st.raw.status === "live") streams++;
+    if (m && m.stats) {
+      entries.push({name: cam.name, stats: m.stats});
+      if (m.median_mph_60s != null) rolling.push(m.median_mph_60s);
+      if (m.rate) rates.push(m.rate);
+      inferMs = m.avg_ms;  // per model, the same for every camera
+    }
+  }
+  showTotals(sec, entries);
+  showIncidentTile(sec);
+  // At any instant only a few cars are measurable, so use each camera's last-60 s median
+  sec.tiles.speed.textContent = mph(median(rolling));
+  sec.tiles.streams.textContent = running.length ? streams + " of " + running.length + " running" : "all paused";
+  sec.tiles.rate.textContent = rates.length ? (rates.reduce((a, b) => a + b) / rates.length).toFixed(1) : "-";
+  sec.tiles.infer.textContent = ms(inferMs);
+}
+
+// ------------------------------------------------------------ start
+
+$("incident-how").innerHTML = INCIDENTS.model
+  ? "<b>Incident check:</b> " + INCIDENTS.model + " (a vision-language model, running on this Mac) looks at each running " +
+    "live camera's last 4 frames, 1 s apart, every " + INCIDENTS.every + " s, and at each new TranStar snapshot (both burst " +
+    "frames, or the single still), and gives the chance it shows a crash, a stopped or stalled vehicle, a person on foot in " +
+    "the road, a wrong-way driver or debris. One check at " + Math.round(INCIDENTS.alert * 100) + "% or more is a " +
+    "possible incident (amber) and the model describes it; it's confirmed (red) when " + INCIDENTS.confirm[0] + " of the " +
+    "camera's last " + INCIDENTS.confirm[1] + " checks are, since real incidents stay in view and false alarms rarely " +
+    "repeat. " + INCIDENTS.accuracy
+  : "";
+SECTIONS.forEach(buildSection);
+applyModel();
+applyView();
+
+const events = new EventSource("/events");
+events.onopen = () => { $("dot").className = "dot live"; $("error").textContent = ""; };
+events.onerror = () => {
+  $("dot").className = "dot err";
+  $("error").textContent = "Lost connection to the Python script, retrying...";
+};
+events.onmessage = e => renderTranstar(JSON.parse(e.data));
+
+if (LIVE_CAMERAS.length) {
+  const liveEvents = new EventSource("/live");
+  liveEvents.onmessage = e => applyLive(JSON.parse(e.data).updates);
+}
+</script>
+</body>
+</html>
